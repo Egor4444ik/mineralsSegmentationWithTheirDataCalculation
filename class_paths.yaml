@@ -1,0 +1,28 @@
+path: ../datasets/merged_root
+train: 
+  - Minerals/train/images
+  - rock_minerals/train/images
+val: 
+  - Minerals/valid/images
+  - rock_minerals/valid/images
+
+nc: 18  # Total combined classes
+names:
+  0: gold
+  1: Pirit-Gold-Rll8
+  2: pyrite
+  3: benitoite
+  4: calcite
+  5: copper
+  6: cuprite
+  7: erythrite
+  8: gold
+  9: gypsum
+  10: halite
+  11: limonite
+  12: magnetite
+  13: opal
+  14: prehnite
+  15: pyrite
+  16: silver
+  17: tantalite

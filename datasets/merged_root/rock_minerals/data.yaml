@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 15
+names: ['benitoite', 'calcite', 'copper', 'cuprite', 'erythrite', 'gold', 'gypsum', 'halite', 'limonite', 'magnetite', 'opal', 'prehnite', 'pyrite', 'silver', 'tantalite']
+
+roboflow:
+  workspace: egor-xttqd
+  project: rock-minerals-iq7ok
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/egor-xttqd/rock-minerals-iq7ok/dataset/1
