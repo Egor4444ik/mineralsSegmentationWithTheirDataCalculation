@@ -1,0 +1,7 @@
+CLASS_PATH = "YamlModelSettings/ClassPaths.yaml"
+MODEL_SETTING = "YamlModelSettings/ModelSettings.yaml"
+MODEL_NAME = "MetaData/yolo26s.pt"
+OBJ_PATH = "MetaData/datasets/magnetite/source/magnetite_UND-magnetite-417-6-1-2020/source/model/model.obj"
+JPG_PATH = "MetaData/datasets/magnetite/source/magnetite_UND-magnetite-417-6-1-2020/source/model/model.jpg"
+WEIGHTS_PATH = "MetaData/runs/detect/train9/weights/best.pt"
+RESULTS_PATH = "MetaData/OutputData/results"

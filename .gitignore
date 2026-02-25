@@ -1,3 +1,9 @@
 venv
 runs
 yolo26s.pt
+MetaData/runs
+OutputData
+MetaData/OutputData
+MetaData/datasets/merged_root/Minerals
+MetaData/datasets/merged_root/rock_minerals
+MetaData/datasets/magnetite

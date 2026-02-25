@@ -1,0 +1,7 @@
+ultralytics
+vedo
+Pillow
+trimesh[easy]
+pyrender
+open3d-cpu
+cv2
