@@ -3,5 +3,6 @@ vedo
 Pillow
 trimesh[easy]
 pyrender
-open3d-cpu
+open3d-cpu  
 cv2
+scipy

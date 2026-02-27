@@ -5,6 +5,7 @@ from PIL import Image
 import cv2
 from ultralytics import YOLO
 import matplotlib.pyplot as plt
+from scipy.spatial import ConvexHull
 
 from utils.settings import JPG_PATH, OBJ_PATH, WEIGHTS_PATH, RESULTS_PATH
 
@@ -119,7 +120,7 @@ class PointCloudObjectDetector:
         z_range = bounds[5] - bounds[4]
         
         # Получаем все вершины mesh
-        vertices = self.mesh.vertices()
+        vertices = self.mesh.vertices
         
         # Предполагаем размер изображения 800x600
         img_width, img_height = 800, 600
@@ -181,6 +182,36 @@ class PointCloudObjectDetector:
                    (vertices[:, 2] >= z_min) & (vertices[:, 2] <= z_max)
         extracted = vertices[mask]
         return extracted, mask
+
+    def visualize_intersection_points(self, intersection_points):
+        """Визуализирует пересечение точек bounding boxes"""
+        if intersection_points is None or len(intersection_points) == 0:
+            print("Нет точек-пересечений для визуализации")
+            return
+        plotter = Plotter()
+        self.mesh.alpha(0.3)
+        plotter.add(self.mesh)
+        points_cloud = Points(intersection_points, r=5, c='magenta', alpha=0.9)
+        plotter.add(points_cloud)
+        center = np.mean(intersection_points, axis=0)
+        text = Text3D(f"Intersection ({len(intersection_points)})", center + [0, 0, 5], s=3, c='magenta')
+        plotter.add(text)
+        plotter.add(Axes(self.mesh))
+        print("Показываю визуализацию пересечения точек bounding boxes...")
+        plotter.show(title="Пересечение точек bounding boxes", viewup="y", axes=1).close()
+
+    def save_points_as_ply(self, points, filename):
+        """Сохраняет точки в формате PLY"""
+        with open(filename, 'w') as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {len(points)}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("end_header\n")
+            for p in points:
+                f.write(f"{p[0]} {p[1]} {p[2]}\n")
     
     def extract_all_points_in_bboxes(self):
         """Извлекает точки для всех обнаруженных bounding boxes"""
@@ -205,117 +236,25 @@ class PointCloudObjectDetector:
                 # Также сохраняем в формате PLY для визуализации
                 self.save_points_as_ply(extracted_points, 
                     f"{self.results_path}/extracted_points/bbox_{i+1}_{box_info['view']}.ply")
-                print(f"Извлечено {len(extracted_points)} точек из {box_info['view']} bbox {i+1}")
 
-        # --- Пересечение всех облаков точек ---
-        intersection_points = None
-        if all_points_list:
-            sets = [set(map(tuple, pts)) for pts in all_points_list if len(pts) > 0]
-            if sets:
-                intersection_points = set.intersection(*sets)
-                intersection_points = np.array(list(intersection_points)) if intersection_points else np.empty((0, 3))
-                # Сохраняем пересечение
-                intersection_txt = f"{self.results_path}/extracted_points/intersection_points.txt"
-                intersection_ply = f"{self.results_path}/extracted_points/intersection_points.ply"
-                np.savetxt(intersection_txt, intersection_points, header='x y z', comments='')
-                self.save_points_as_ply(intersection_points, intersection_ply)
-                print(f"Сохранено {len(intersection_points)} точек-пересечений во всех bbox: {intersection_txt}")
-                # Визуализация пересечения
-                self.visualize_intersection_points(intersection_points)
         return self.extracted_points
 
-    def visualize_intersection_points(self, intersection_points):
-        """Визуализирует пересечение точек bounding boxes"""
-        if intersection_points is None or len(intersection_points) == 0:
-            print("Нет точек-пересечений для визуализации")
-            return
-        plotter = Plotter()
-        self.mesh.alpha(0.3)
-        plotter.add(self.mesh)
-        points_cloud = Points(intersection_points, r=5, c='magenta', alpha=0.9)
-        plotter.add(points_cloud)
-        center = np.mean(intersection_points, axis=0)
-        text = Text3D(f"Intersection ({len(intersection_points)})", center + [0, 0, 5], s=3, c='magenta')
-        plotter.add(text)
-        plotter.add(Axes(self.mesh))
-        print("Показываю визуализацию пересечения точек bounding boxes...")
-        plotter.show(title="Пересечение точек bounding boxes", viewup="y", axes=1).close()
-    
-    def save_points_as_ply(self, points, filename):
-        """Сохраняет точки в формате PLY"""
-        with open(filename, 'w') as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            f.write(f"element vertex {len(points)}\n")
-            f.write("property float x\n")
-            f.write("property float y\n")
-            f.write("property float z\n")
-            f.write("end_header\n")
-            for p in points:
-                f.write(f"{p[0]} {p[1]} {p[2]}\n")
-
     def visualize_extracted_points(self):
-        """Визуализирует извлеченные точки разными цветами"""
+        """
+        Визуализирует:
+        - все bounding boxes (building boxes) в проекциях
+        - облако точек внутри объектов (не только на поверхности)
+        - точки, попадающие в пересечение всех облаков точек (bbox)
+        """
         if not self.extracted_points:
             print("Нет извлеченных точек для визуализации")
             return
-        
+
         plotter = Plotter()
-        
-        # Показываем исходный mesh полупрозрачным
-        self.mesh.alpha(0.3)
+        self.mesh.alpha(0.2)
         plotter.add(self.mesh)
         
-        # Разные цвета для разных bounding boxes
-        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
-        
-        for i, point_info in enumerate(self.extracted_points):
-            color = colors[i % len(colors)]
-            
-            # Создаем облако точек для извлеченных точек
-            points_cloud = Points(point_info['points'], r=3, c=color, alpha=0.8)
-            plotter.add(points_cloud)
-            
-            # Добавляем текст с информацией
-            center = np.mean(point_info['points'], axis=0)
-            text = Text3D(f"Object {i+1} ({point_info['view']})", 
-                         center + [0, 0, 5], s=3, c=color)
-            plotter.add(text)
-        
-        plotter.add(Axes(self.mesh))
-        print("Показываю визуализацию извлеченных точек...")
-        plotter.show(title="Извлеченные точки из bounding boxes", viewup="y", axes=1).close()
-
-    def analyze_extracted_points(self):
-        """Анализирует статистику извлеченных точек"""
-        if not self.extracted_points:
-            print("Нет извлеченных точек для анализа")
-            return
-        
-        report_path = f"{self.results_path}/extracted_points/points_analysis.txt"
-        
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write("=" * 60 + "\n")
-            f.write("АНАЛИЗ ИЗВЛЕЧЕННЫХ ТОЧЕК ИЗ BOUNDING BOXES\n")
-            f.write("=" * 60 + "\n\n")
-            
-            total_points = 0
-            for i, point_info in enumerate(self.extracted_points):
-                points = point_info['points']
-                total_points += len(points)
-                
-                f.write(f"Объект {i+1} (ракурс: {point_info['view']}):\n")
-                f.write(f"  Количество точек: {len(points)}\n")
-                f.write(f"  Центр: ({np.mean(points[:,0]):.2f}, {np.mean(points[:,1]):.2f}, {np.mean(points[:,2]):.2f})\n")
-                f.write(f"  Размеры (x,y,z): ({np.max(points[:,0])-np.min(points[:,0]):.2f}, "
-                       f"{np.max(points[:,1])-np.min(points[:,1]):.2f}, "
-                       f"{np.max(points[:,2])-np.min(points[:,2]):.2f})\n\n")
-            
-            f.write("=" * 60 + "\n")
-            f.write(f"ВСЕГО ИЗВЛЕЧЕНО ТОЧЕК: {total_points}\n")
-            f.write("=" * 60 + "\n")
-        
-        print(f"Анализ точек сохранен в: {report_path}")
+        plotter.show(title="Default object", viewup="y", axes=1).close()
 
     def run_pipeline(self, conf=0.01, iou=0.001):
         """
@@ -340,7 +279,7 @@ class PointCloudObjectDetector:
             # 6. Генерация отчета о детекции
             self.generate_report(all_results)
             
-            # 7. Извлечение точек из bounding boxes (НОВОЕ!)
+            # 7. Извлечение точек из bounding boxes
             if len(self.all_boxes) > 0:
                 print("\n" + "="*50)
                 print("ИЗВЛЕЧЕНИЕ ТОЧЕК ИЗ BOUNDING BOXES")
@@ -349,12 +288,9 @@ class PointCloudObjectDetector:
                 # Извлекаем точки
                 self.extract_all_points_in_bboxes()
                 
-                # Анализируем извлеченные точки
-                self.analyze_extracted_points()
-                
                 # Визуализируем извлеченные точки
                 self.visualize_extracted_points()
-                
+
                 # Обычная визуализация со всеми детекциями
                 self.visualize_3d_with_all_detections()
             else:
@@ -461,6 +397,7 @@ class PointCloudObjectDetector:
             
             # Детекция
             results = model(path, conf=conf, iou=iou, verbose=False)
+            self.results = results
             
             # Получаем bounding boxes
             boxes = []
@@ -660,8 +597,8 @@ class PointCloudObjectDetector:
         print(f"3D сводки сохранены в: {self.results_path}/combined/")
         plotter_3d.close()
     
-    def visualize_3d_with_all_detections(self):
-        """Интерактивная 3D визуализация со всеми обнаруженными объектами"""
+    def visualize_3d_with_all_detections(self, scale=3):
+        """Интерактивная 3D визуализация со всеми обнаруженными объектами и раскрашиванием пересекающейся области"""
         plotter = Plotter()
         plotter.add(self.mesh)
         
@@ -670,93 +607,320 @@ class PointCloudObjectDetector:
         y_range = bounds[3] - bounds[2]
         z_range = bounds[5] - bounds[4]
         
+        print(f"Bounds модели: X=[{bounds[0]:.2f}, {bounds[1]:.2f}], "
+            f"Y=[{bounds[2]:.2f}, {bounds[3]:.2f}], "
+            f"Z=[{bounds[4]:.2f}, {bounds[5]:.2f}]")
+        print(f"Размеры модели: X={x_range:.2f}, Y={y_range:.2f}, Z={z_range:.2f}")
+        print(f"Масштабный коэффициент: {scale}")
+        
         # Разные цвета для разных ракурсов
-        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
+        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'cyan', 'yellow', 'magenta']
+        
+        img_width, img_height = 800, 600
+        
+        # Группируем боксы по ракурсам для лучшего понимания
+        views_summary = {}
+        
+        # Получаем все вершины mesh для поиска точек в пересечении
+        vertices = self.mesh.vertices
+        intersection_mask = np.ones(len(vertices), dtype=bool)  # Начинаем со всех точек
+        
+        # Список для хранения 3D bounding boxes для каждого обнаружения
+        bboxes_3d = []
         
         for i, box_info in enumerate(self.all_boxes):
             view = box_info['view']
             box = box_info['box']
             color = colors[i % len(colors)]
             
-            img_width, img_height = 800, 600
+            # Конвертируем координаты box в относительные (0-1) и обрезаем до допустимого диапазона
+            x1_rel = max(0, min(1, box[0] / img_width))
+            y1_rel = max(0, min(1, box[1] / img_height))
+            x2_rel = max(0, min(1, box[2] / img_width))
+            y2_rel = max(0, min(1, box[3] / img_height))
             
-            x1_rel = box[0] / img_width
-            y1_rel = box[1] / img_height
-            x2_rel = box[2] / img_width
-            y2_rel = box[3] / img_height
+            # Инвертируем Y координату ТОЛЬКО для front/back и left/right видов
+            if view in ['front', 'back', 'left', 'right']:
+                y1_rel = 1.0 - y1_rel
+                y2_rel = 1.0 - y2_rel
             
-            # Проецируем на соответствующую плоскость
+            # Берем min и max для обеих координат
+            x_min_rel = min(x1_rel, x2_rel)
+            x_max_rel = max(x1_rel, x2_rel)
+            y_min_rel = min(y1_rel, y2_rel)
+            y_max_rel = max(y1_rel, y2_rel)
+            
+            # Вычисляем центр бокса в относительных координатах
+            center_x_rel = (x_min_rel + x_max_rel) / 2
+            center_y_rel = (y_min_rel + y_max_rel) / 2
+            
+            # Вычисляем размеры бокса в относительных координатах
+            width_rel = x_max_rel - x_min_rel
+            height_rel = y_max_rel - y_min_rel
+            
+            # Применяем масштаб к размерам (сохраняя центр)
+            width_rel_scaled = width_rel * scale
+            height_rel_scaled = height_rel * scale
+            
+            # Новые границы с тем же центром
+            x_min_rel_scaled = center_x_rel - width_rel_scaled / 2
+            x_max_rel_scaled = center_x_rel + width_rel_scaled / 2
+            y_min_rel_scaled = center_y_rel - height_rel_scaled / 2
+            y_max_rel_scaled = center_y_rel + height_rel_scaled / 2
+            
+            # Обрезаем до [0, 1] после масштабирования
+            x_min_rel_scaled = max(0, min(1, x_min_rel_scaled))
+            x_max_rel_scaled = max(0, min(1, x_max_rel_scaled))
+            y_min_rel_scaled = max(0, min(1, y_min_rel_scaled))
+            y_max_rel_scaled = max(0, min(1, y_min_rel_scaled))
+            
+            print(f"\nBox {i+1} ({view}):")
+            print(f"  Оригинальные относительные координаты: x=[{x_min_rel:.3f}, {x_max_rel:.3f}], y=[{y_min_rel:.3f}, {y_max_rel:.3f}]")
+            print(f"  Масштабированные (scale={scale}): x=[{x_min_rel_scaled:.3f}, {x_max_rel_scaled:.3f}], y=[{y_min_rel_scaled:.3f}, {y_max_rel_scaled:.3f}]")
+            
+            # Проверяем, что box имеет ненулевую площадь после масштабирования
+            if x_max_rel_scaled <= x_min_rel_scaled or y_max_rel_scaled <= y_min_rel_scaled:
+                print(f"  Box {i+1} ({view}) имеет нулевую площадь после масштабирования, пропускаем")
+                continue
+            
+            # Создаем bounding box в мировых координатах с МАСШТАБИРОВАННЫМИ координатами
+            points = []
+            bbox_min = [0, 0, 0]
+            bbox_max = [0, 0, 0]
+            
             if view in ['front', 'back']:
+                # front/back: смотрим вдоль оси Z
                 z_pos = bounds[5] if view == 'front' else bounds[4]
-                x_min = bounds[0] + x1_rel * x_range
-                x_max = bounds[0] + x2_rel * x_range
-                y_min = bounds[2] + y1_rel * y_range
-                y_max = bounds[2] + y2_rel * y_range
                 
-                # Создаем плоскость с проекцией
-                plane = Plane(pos=[(x_min+x_max)/2, (y_min+y_max)/2, z_pos],
-                            normal=[0, 0, 1 if view == 'front' else -1],
-                            s=(x_max-x_min, y_max-y_min)).c(color).alpha(0.3)
-                plotter.add(plane)
+                # ИСПОЛЬЗУЕМ МАСШТАБИРОВАННЫЕ КООРДИНАТЫ
+                x_min_3d = bounds[0] + x_min_rel_scaled * x_range
+                x_max_3d = bounds[0] + x_max_rel_scaled * x_range
+                y_min_3d = bounds[2] + y_min_rel_scaled * y_range
+                y_max_3d = bounds[2] + y_max_rel_scaled * y_range
                 
-                # Добавляем рамку
+                # Толщина тоже масштабируется пропорционально
+                thickness = z_range * 0.01 * scale
+                
                 points = [
-                    [x_min, y_min, z_pos],
-                    [x_max, y_min, z_pos],
-                    [x_max, y_max, z_pos],
-                    [x_min, y_max, z_pos],
-                    [x_min, y_min, z_pos]
+                    [x_min_3d, y_min_3d, z_pos - thickness/2],
+                    [x_max_3d, y_min_3d, z_pos - thickness/2],
+                    [x_max_3d, y_max_3d, z_pos - thickness/2],
+                    [x_min_3d, y_max_3d, z_pos - thickness/2],
+                    [x_min_3d, y_min_3d, z_pos + thickness/2],
+                    [x_max_3d, y_min_3d, z_pos + thickness/2],
+                    [x_max_3d, y_max_3d, z_pos + thickness/2],
+                    [x_min_3d, y_max_3d, z_pos + thickness/2]
                 ]
-                bbox_lines = Lines(points, closed=True).c(color).lw(3)
-                plotter.add(bbox_lines)
+                
+                bbox_min = [x_min_3d, y_min_3d, z_pos - thickness/2]
+                bbox_max = [x_max_3d, y_max_3d, z_pos + thickness/2]
+                
+                width = x_max_3d - x_min_3d
+                height = y_max_3d - y_min_3d
+                print(f"  3D размеры: ширина(X)={width:.2f}, высота(Y)={height:.2f}, толщина(Z)={thickness:.2f}")
                 
             elif view in ['left', 'right']:
+                # left/right: смотрим вдоль оси X
                 x_pos = bounds[0] if view == 'left' else bounds[1]
-                y_min = bounds[2] + y1_rel * y_range
-                y_max = bounds[2] + y2_rel * y_range
-                z_min = bounds[4] + x1_rel * z_range
-                z_max = bounds[4] + x2_rel * z_range
                 
-                plane = Plane(pos=[x_pos, (y_min+y_max)/2, (z_min+z_max)/2],
-                            normal=[1 if view == 'left' else -1, 0, 0],
-                            s=(y_max-y_min, z_max-z_min)).c(color).alpha(0.3)
-                plotter.add(plane)
+                # ИСПОЛЬЗУЕМ МАСШТАБИРОВАННЫЕ КООРДИНАТЫ
+                y_min_3d = bounds[2] + y_min_rel_scaled * y_range
+                y_max_3d = bounds[2] + y_max_rel_scaled * y_range
+                z_min_3d = bounds[4] + x_min_rel_scaled * z_range
+                z_max_3d = bounds[4] + x_max_rel_scaled * z_range
+                
+                # Толщина масштабируется
+                thickness = x_range * 0.01 * scale
                 
                 points = [
-                    [x_pos, y_min, z_min],
-                    [x_pos, y_max, z_min],
-                    [x_pos, y_max, z_max],
-                    [x_pos, y_min, z_max],
-                    [x_pos, y_min, z_min]
+                    [x_pos - thickness/2, y_min_3d, z_min_3d],
+                    [x_pos - thickness/2, y_max_3d, z_min_3d],
+                    [x_pos - thickness/2, y_max_3d, z_max_3d],
+                    [x_pos - thickness/2, y_min_3d, z_max_3d],
+                    [x_pos + thickness/2, y_min_3d, z_min_3d],
+                    [x_pos + thickness/2, y_max_3d, z_min_3d],
+                    [x_pos + thickness/2, y_max_3d, z_max_3d],
+                    [x_pos + thickness/2, y_min_3d, z_max_3d]
                 ]
-                bbox_lines = Lines(points, closed=True).c(color).lw(3)
-                plotter.add(bbox_lines)
+                
+                bbox_min = [x_pos - thickness/2, y_min_3d, z_min_3d]
+                bbox_max = [x_pos + thickness/2, y_max_3d, z_max_3d]
+                
+                height = y_max_3d - y_min_3d
+                depth = z_max_3d - z_min_3d
+                print(f"  3D размеры: высота(Y)={height:.2f}, глубина(Z)={depth:.2f}, толщина(X)={thickness:.2f}")
                 
             elif view in ['top', 'bottom']:
+                # top/bottom: смотрим вдоль оси Y
                 y_pos = bounds[3] if view == 'top' else bounds[2]
-                x_min = bounds[0] + x1_rel * x_range
-                x_max = bounds[0] + x2_rel * x_range
-                z_min = bounds[4] + y1_rel * z_range
-                z_max = bounds[4] + y2_rel * z_range
                 
-                plane = Plane(pos=[(x_min+x_max)/2, y_pos, (z_min+z_max)/2],
-                            normal=[0, 1 if view == 'top' else -1, 0],
-                            s=(x_max-x_min, z_max-z_min)).c(color).alpha(0.3)
-                plotter.add(plane)
+                # ИСПОЛЬЗУЕМ МАСШТАБИРОВАННЫЕ КООРДИНАТЫ
+                x_min_3d = bounds[0] + x_min_rel_scaled * x_range
+                x_max_3d = bounds[0] + x_max_rel_scaled * x_range
+                z_min_3d = bounds[4] + y_min_rel_scaled * z_range
+                z_max_3d = bounds[4] + y_max_rel_scaled * z_range
+                
+                # Толщина масштабируется
+                thickness = y_range * 0.01 * scale
                 
                 points = [
-                    [x_min, y_pos, z_min],
-                    [x_max, y_pos, z_min],
-                    [x_max, y_pos, z_max],
-                    [x_min, y_pos, z_max],
-                    [x_min, y_pos, z_min]
+                    [x_min_3d, y_pos - thickness/2, z_min_3d],
+                    [x_max_3d, y_pos - thickness/2, z_min_3d],
+                    [x_max_3d, y_pos - thickness/2, z_max_3d],
+                    [x_min_3d, y_pos - thickness/2, z_max_3d],
+                    [x_min_3d, y_pos + thickness/2, z_min_3d],
+                    [x_max_3d, y_pos + thickness/2, z_min_3d],
+                    [x_max_3d, y_pos + thickness/2, z_max_3d],
+                    [x_min_3d, y_pos + thickness/2, z_max_3d]
                 ]
-                bbox_lines = Lines(points, closed=True).c(color).lw(3)
-                plotter.add(bbox_lines)
+                
+                bbox_min = [x_min_3d, y_pos - thickness/2, z_min_3d]
+                bbox_max = [x_max_3d, y_pos + thickness/2, z_max_3d]
+                
+                width = x_max_3d - x_min_3d
+                depth = z_max_3d - z_min_3d
+                print(f"  3D размеры: ширина(X)={width:.2f}, глубина(Z)={depth:.2f}, толщина(Y)={thickness:.2f}")
+            else:
+                continue
+            
+            # Сохраняем 3D bounding box для поиска пересечений
+            bboxes_3d.append({
+                'min': bbox_min,
+                'max': bbox_max,
+                'view': view,
+                'index': i
+            })
+            
+            # Обновляем маску пересечения (точки должны быть внутри ВСЕХ bounding boxes)
+            current_mask = (
+                (vertices[:, 0] >= bbox_min[0]) & (vertices[:, 0] <= bbox_max[0]) &
+                (vertices[:, 1] >= bbox_min[1]) & (vertices[:, 1] <= bbox_max[1]) &
+                (vertices[:, 2] >= bbox_min[2]) & (vertices[:, 2] <= bbox_max[2])
+            )
+            intersection_mask = intersection_mask & current_mask
+            
+            try:
+                # Создаем куб (параллелепипед) из 8 точек
+                faces = [
+                    [0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
+                    [2, 3, 7, 6], [1, 2, 6, 5], [0, 3, 7, 4]
+                ]
+                
+                # Создаем mesh куба
+                cube_mesh = Mesh([points, faces])
+                cube_mesh.c(color).alpha(0.15).wireframe(False)
+                plotter.add(cube_mesh)
+                
+                # Добавляем ребра куба
+                edges = [
+                    [0, 1], [1, 2], [2, 3], [3, 0],
+                    [4, 5], [5, 6], [6, 7], [7, 4],
+                    [0, 4], [1, 5], [2, 6], [3, 7]
+                ]
+                
+                for edge in edges:
+                    line = Line(points[edge[0]], points[edge[1]]).c('black').lw(1)
+                    plotter.add(line)
+                
+                # Добавляем текст
+                center = np.mean(points, axis=0)
+                text = Text3D(f"{view[:2]}{i+1}", center, s=2 * scale, c='black')
+                plotter.add(text)
+                
+                # Сохраняем информацию для сводки
+                if view not in views_summary:
+                    views_summary[view] = []
+                views_summary[view].append({
+                    'index': i+1,
+                    'center': center,
+                    'size': [width if 'width' in locals() else 0,
+                            height if 'height' in locals() else 0,
+                            depth if 'depth' in locals() else 0]
+                })
+                
+            except Exception as e:
+                print(f"Ошибка при создании bounding box {i+1} ({view}): {e}")
+                import traceback
+                traceback.print_exc()
+                continue
         
+        # Выводим сводку по ракурсам
+        print("\n" + "="*50)
+        print("СВОДКА ПО РАКУРСАМ:")
+        print("="*50)
+        for view, boxes in views_summary.items():
+            print(f"\n{view.upper()}: {len(boxes)} объектов")
+            for box in boxes:
+                print(f"  Box {box['index']}: центр ({box['center'][0]:.1f}, {box['center'][1]:.1f}, {box['center'][2]:.1f})")
+                print(f"    размеры: X={box['size'][0]:.1f}, Y={box['size'][1]:.1f}, Z={box['size'][2]:.1f}")
+        
+        # РАСКРАШИВАНИЕ ПЕРЕСЕКАЮЩЕЙСЯ ОБЛАСТИ
+        intersection_points = vertices[intersection_mask]
+        intersection_points = intersection_points[::1000]
+        if len(intersection_points) > 0:
+
+            try:
+                if len(intersection_points) >= 4:
+                    hull = ConvexHull(intersection_points)
+                    volume_convex = hull.volume
+                    print(f"  Объем (выпуклая оболочка): {volume_convex:.2f} куб. единиц")
+                else:
+                    volume_convex = 0
+                    print("  Объем (выпуклая оболочка): недостаточно точек (<4)")
+            except Exception as e:
+                volume_convex = 0
+                print(f"  Не удалось рассчитать выпуклую оболочку: {e}")
+            
+            # Создаем облако точек для пересечения
+            intersection_cloud = Points(intersection_points, r=8, c='yellow', alpha=1.0)
+            plotter.add(intersection_cloud)
+            
+            # Добавляем текст с информацией
+            center_intersection = np.max(intersection_points, axis=0)*1.1
+            class_ids = self.results[0].boxes.cls.cpu().numpy().astype(int)
+            class_names = [self.results[0].names[cls_id] for cls_id in class_ids]
+            names_counts = [class_names.count(name) for name in class_names]
+            max_names_counts = max(names_counts) if names_counts else 0
+            class_name = [class_names[i] for i in range(len(class_names)) if names_counts[i] == max_names_counts][0]
+
+            text_intersection = Text3D(f"Volume is {round(volume_convex, 3)} meters - {class_name}", 
+                                    center_intersection + [0, 0, 0], 
+                                    s=4, c='black')
+            plotter.add(text_intersection)
+            
+            # Сохраняем точки пересечения в файл
+            intersection_path = f"{self.results_path}/extracted_points/final_intersection.txt"
+            np.savetxt(intersection_path, intersection_points, 
+                    header='x y z', comments='')
+            print(f"Точки пересечения сохранены в: {intersection_path}")
+            
+            # Также создаем отдельный PLY файл для пересечения
+            self.save_points_as_ply(intersection_points, 
+                f"{self.results_path}/extracted_points/final_intersection.ply")
+        else:
+            print("\nТочек в пересечении всех bounding boxes не найдено!")
+        
+        # Добавляем оси
         plotter.add(Axes(self.mesh))
-        print("Показываю интерактивную 3D визуализацию со всеми обнаруженными объектами...")
-        plotter.show(title="Все обнаруженные объекты в 3D", viewup="y", axes=1).close()
+        
+        print("\nПоказываю интерактивную 3D визуализацию со всеми обнаруженными объектами...")
+        print("Желтым цветом выделены точки, попадающие во все bounding boxes одновременно")
+        plotter.show(title="Все обнаруженные объекты в 3D с выделением пересечения", 
+                    viewup="y", axes=1).close()
+        
+    def calculate_volume_convex_hull(self, points):
+        """
+        Расчет объема по выпуклой оболочке точек
+        """
+        if len(points) < 4:  # Для 3D объема нужно минимум 4 точки
+            return 0.0
+        
+        try:
+            hull = ConvexHull(points)
+            volume = hull.volume
+            return volume
+        except:
+            return 0.0
 
 def process_pointcloud_with_detection(obj_path = OBJ_PATH, jpg_path = JPG_PATH, model_path = WEIGHTS_PATH, conf=0.01, iou=0.001):
     """
